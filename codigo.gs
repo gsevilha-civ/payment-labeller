@@ -1,5 +1,5 @@
 /*************************************************************
- * Fraud Risk — Payment attempts (last 30m) — TRAFFIC-ALIGNED (FULL, TOP10 DEBUGGED)
+ * Fraud Risk — Payment attempts (día calendario anterior, TZ Madrid) — TRAFFIC-ALIGNED (FULL, TOP10 DEBUGGED)
  *
  * WHAT THIS SCRIPT DOES:
  *  - READ-ONLY monitoring tool
@@ -30,7 +30,7 @@ const CFG = {
 
   PAYMENT_TS_FIELD: "created_at", // DATETIME
   PAYMENT_TYPE_FILTER: "Pay",
-  WINDOW_MINUTES: 30,
+  /** Ventana: día calendario anterior completo en TIMEZONE (ya no últimos N minutos). */
   TOP_N: 10,
 
   EXCLUDE_TYPOLOGY: 1, // null to disable
@@ -530,7 +530,7 @@ function writeAnalyticsToSheet_(ss, result) {
   const payload = buildDashboardPayloadFromResult_(result);
   const n = (v) => (v === null || v === undefined || v === "") ? 0 : Number(v);
 
-  sheet.getRange("A1").setValue("Analítica de riesgo — intentos de pago (ventana móvil)");
+  sheet.getRange("A1").setValue("Analítica de riesgo — intentos de pago (día anterior, " + (CFG.TIMEZONE || "Europe/Madrid") + ")");
   sheet.getRange("A1:B1").merge().setFontWeight("bold").setFontSize(13);
   sheet.getRange("A2").setValue("Actualizado");
   sheet.getRange("B2").setValue(new Date());
@@ -1545,8 +1545,8 @@ function buildSQL_() {
   return `
 WITH params AS (
   SELECT
-    (SELECT MAX(${CFG.PAYMENT_TS_FIELD}) FROM \`${CFG.PAYMENTS_TABLE}\` WHERE payment_type = '${CFG.PAYMENT_TYPE_FILTER}') AS run_anchor_dt,
-    ${CFG.WINDOW_MINUTES} AS window_minutes,
+    DATETIME_SUB(DATETIME_TRUNC(DATETIME(CURRENT_TIMESTAMP(), '${tz}'), DAY), INTERVAL 1 MICROSECOND) AS run_anchor_dt,
+    CAST(NULL AS INT64) AS window_minutes,
     ${CFG.W_BOOKING_WINDOW} AS w_booking_window,
     ${CFG.W_CATALOG_RISK}   AS w_catalog_risk,
     ${CFG.W_COUNTRY_RISK}   AS w_country_risk
@@ -1554,7 +1554,7 @@ WITH params AS (
 bounds AS (
   SELECT
     run_anchor_dt,
-    DATETIME_SUB(run_anchor_dt, INTERVAL window_minutes MINUTE) AS window_start_dt,
+    DATETIME_SUB(DATETIME_TRUNC(DATETIME(CURRENT_TIMESTAMP(), '${tz}'), DAY), INTERVAL 1 DAY) AS window_start_dt,
     run_anchor_dt AS window_end_dt
   FROM params
 ),
