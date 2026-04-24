@@ -43,7 +43,11 @@ const CFG = {
   TIMEZONE: "Europe/Madrid",
 
   /** Hoja donde se escribe el resumen analítico y el gráfico (script vinculado a Sheets). */
-  ANALYTICS_SHEET: "Analítica riesgo"
+  ANALYTICS_SHEET: "Analítica riesgo",
+  /** Origen diario para el histórico de sparklines (misma tabla «Categoría» / «Intentos» que la analítica). */
+  DASHBOARD_DATA_SHEET: "dashboard_data",
+  /** Append-only: Fecha, Categoría, Porcentaje, Intentos (rellena `recordDailyTraffic`). */
+  HISTORICO_TRAFFIC_SHEET: "Historico_Traffic"
 };
 
 /* =========================
@@ -326,6 +330,8 @@ function getDashboardData() {
  * Misma forma que getDashboardData(), pero leyendo la pestaña `CFG.ANALYTICS_SHEET`
  * tras `escribirAnaliticaEnHoja()` / `writeAnalyticsToSheet_` (sin ejecutar BigQuery).
  * Pensado para el modal del libro: una sola query, datos y gráfico en hoja, UI desde celdas.
+ * Cada elemento de `traffic` incluye `spark`: últimos 30 % leídos de `CFG.HISTORICO_TRAFFIC_SHEET`
+ * por categoría (relleno con el % actual si hay menos de 30 días).
  */
 function getDashboardDataFromSheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -338,8 +344,10 @@ function getDashboardDataFromSheet() {
   }
 
   const summaryStart = findAnalyticsSummaryStartRow_(sheet);
+  /** Debe coincidir con el número de filas del array `summary` en writeAnalyticsToSheet_. */
+  const SUMMARY_ROW_COUNT = 14;
   const summaryVals = summaryStart
-    ? sheet.getRange(summaryStart, 2, summaryStart + 13, 2).getValues()
+    ? sheet.getRange(summaryStart, 2, SUMMARY_ROW_COUNT, 1).getValues()
     : [];
 
   const tierBlock = findAnalyticsTierTable_(sheet);
@@ -349,8 +357,7 @@ function getDashboardDataFromSheet() {
     );
   }
 
-  const lastDataRow = Math.min(tierBlock.dataStartRow + 7, sheet.getLastRow());
-  const tierRows = sheet.getRange(tierBlock.dataStartRow, 1, lastDataRow, 4).getValues();
+  const tierRows = readAnalyticsTierTableRows_(sheet, tierBlock);
   const traffic = [];
   for (let i = 0; i < tierRows.length; i++) {
     const label = tierRows[i][0];
@@ -363,6 +370,10 @@ function getDashboardDataFromSheet() {
 
   if (traffic.length === 0) {
     throw new Error("La tabla de tiers en la hoja está vacía. Actualiza la analítica.");
+  }
+
+  for (let ti = 0; ti < traffic.length; ti++) {
+    traffic[ti].spark = getSparkSeries30DaysFromHistorico_(ss, traffic[ti].label, traffic[ti].pct);
   }
 
   const g = (idx) => (summaryVals[idx] && summaryVals[idx][0] !== "" ? summaryVals[idx][0] : "");
@@ -409,13 +420,156 @@ function findAnalyticsTierTable_(sheet) {
   return null;
 }
 
+/**
+ * Filas de la tabla «Categoría» / «Intentos» (máx. 8 filas desde `dataStartRow`).
+ * `Sheet.getRange(fila, col, numFilas, numCols)` usa conteos, no fila final.
+ */
+function readAnalyticsTierTableRows_(sheet, tierBlock) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < tierBlock.dataStartRow) return [];
+  const tierEndRow = Math.min(tierBlock.dataStartRow + 7, lastRow);
+  const numRows = tierEndRow - tierBlock.dataStartRow + 1;
+  return sheet.getRange(tierBlock.dataStartRow, 1, numRows, 4).getValues();
+}
+
+/**
+ * Añade filas a `CFG.HISTORICO_TRAFFIC_SHEET` desde la tabla de tiers de `src`
+ * (cabecera «Categoría» / «Intentos»). Usado por el activador diario y al abrir el monitor.
+ */
+function appendHistoricoTrafficSnapshotFromSheet_(ss, src, srcLabelForErrors) {
+  const srcName = srcLabelForErrors || (src && src.getName()) || "hoja";
+  if (!ss) throw new Error("No hay libro activo.");
+  if (!src) throw new Error("Hoja origen inválida para el histórico.");
+
+  const tierBlock = findAnalyticsTierTable_(src);
+  if (!tierBlock) {
+    throw new Error(
+      "No se encontró la tabla de tiers en «" + srcName + "» (cabecera «Categoría» / «Intentos»)."
+    );
+  }
+
+  const histName = CFG.HISTORICO_TRAFFIC_SHEET || "Historico_Traffic";
+  let hist = ss.getSheetByName(histName);
+  if (!hist) {
+    hist = ss.insertSheet(histName);
+  }
+  if (hist.getLastRow() === 0) {
+    hist
+      .getRange(1, 1, 1, 4)
+      .setValues([["Fecha", "Categoría", "Porcentaje", "Intentos"]])
+      .setFontWeight("bold")
+      .setBackground("#f3f3f3");
+  }
+
+  const now = new Date();
+  const tierRows = readAnalyticsTierTableRows_(src, tierBlock);
+  const rowsToAppend = [];
+  for (let i = 0; i < tierRows.length; i++) {
+    const label = tierRows[i][0];
+    if (label === "" || label === null) break;
+    const count = tierRows[i][1];
+    const pctCell = tierRows[i][3];
+    const c = count === "" || count === null || count === undefined ? 0 : Number(count);
+    let p = 0;
+    if (pctCell !== "" && pctCell !== null && pctCell !== undefined) {
+      p = typeof pctCell === "number" ? pctCell : Number(String(pctCell).replace(",", "."));
+    }
+    if (isNaN(p)) p = 0;
+    const pRounded = Math.round(p * 10) / 10;
+    rowsToAppend.push([now, String(label), pRounded, isNaN(c) ? 0 : c]);
+  }
+
+  if (rowsToAppend.length === 0) {
+    throw new Error("La tabla de tiers en «" + srcName + "» no tiene filas para registrar.");
+  }
+
+  const startRow = hist.getLastRow() + 1;
+  const nAppend = rowsToAppend.length;
+  hist.getRange(startRow, 1, nAppend, 4).setValues(rowsToAppend);
+  hist.getRange(startRow, 1, nAppend, 1).setNumberFormat("yyyy-mm-dd hh:mm");
+  hist.getRange(startRow, 3, nAppend, 1).setNumberFormat("0.0");
+  hist.getRange(startRow, 4, nAppend, 1).setNumberFormat("#,##0");
+}
+
+/**
+ * Copia un snapshot diario de la tabla de tiers de `CFG.DASHBOARD_DATA_SHEET`
+ * a `CFG.HISTORICO_TRAFFIC_SHEET` (Fecha, Categoría, Porcentaje, Intentos).
+ * Pensado para activador horario diario.
+ */
+function recordDailyTraffic() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss) throw new Error("No hay libro activo.");
+
+  const srcName = CFG.DASHBOARD_DATA_SHEET || "dashboard_data";
+  const src = ss.getSheetByName(srcName);
+  if (!src) {
+    throw new Error('No existe la hoja «' + srcName + '». Crea la pestaña o ajusta CFG.DASHBOARD_DATA_SHEET.');
+  }
+
+  appendHistoricoTrafficSnapshotFromSheet_(ss, src, srcName);
+}
+
+function dateKeyInTimezone_(value) {
+  const tz = CFG.TIMEZONE || "Europe/Madrid";
+  let d = value;
+  if (!(d instanceof Date)) {
+    if (d === "" || d === null || d === undefined) return "";
+    d = new Date(d);
+  }
+  if (isNaN(d.getTime())) return "";
+  return Utilities.formatDate(d, tz, "yyyy-MM-dd");
+}
+
+function parsePctCellValue_(pctCell) {
+  let p = 0;
+  if (pctCell !== "" && pctCell !== null && pctCell !== undefined) {
+    p = typeof pctCell === "number" ? pctCell : Number(String(pctCell).replace(",", "."));
+  }
+  if (isNaN(p)) p = 0;
+  return Math.round(p * 10) / 10;
+}
+
+/**
+ * Últimos 30 % por categoría (una muestra por día calendario en TZ; gana la última fila del día).
+ * Rellena por la izquierda con `currentPct` si hay menos de 30 días.
+ */
+function getSparkSeries30DaysFromHistorico_(ss, label, currentPct) {
+  const histName = CFG.HISTORICO_TRAFFIC_SHEET || "Historico_Traffic";
+  const sheet = ss.getSheetByName(histName);
+  const want = 30;
+  const cur = typeof currentPct === "number" && !isNaN(currentPct) ? currentPct : 0;
+  if (!sheet || sheet.getLastRow() < 2) {
+    const flat = [];
+    for (let i = 0; i < want; i++) flat.push(cur);
+    return flat;
+  }
+
+  const lastR = sheet.getLastRow();
+  const numHistRows = lastR - 1;
+  const data = sheet.getRange(2, 1, numHistRows, 4).getValues();
+  const needle = String(label || "").trim();
+  const byDay = {};
+  for (let r = 0; r < data.length; r++) {
+    const cat = String(data[r][1] || "").trim();
+    if (cat !== needle) continue;
+    const key = dateKeyInTimezone_(data[r][0]);
+    if (!key) continue;
+    byDay[key] = parsePctCellValue_(data[r][2]);
+  }
+  const days = Object.keys(byDay).sort();
+  const series = days.slice(-want).map((k) => byDay[k]);
+  while (series.length < want) series.unshift(cur);
+  if (series.length > want) return series.slice(-want);
+  return series;
+}
+
 function tierUiMeta_(tier) {
   const t = String(tier || "").toUpperCase();
   const map = {
-    LOW: { label: "Legítimo", emoji: "🟢", color: "#1D9E75" },
-    MEDIUM: { label: "Dudoso", emoji: "🟡", color: "#EF9F27" },
-    HIGH: { label: "Poco fiable", emoji: "🟠", color: "#D85A30" },
-    CRITICAL: { label: "Malicioso", emoji: "🔴", color: "#E24B4A" }
+    LOW: { label: "Legítimo", emoji: "🟢", color: "#22c55e" },
+    MEDIUM: { label: "Dudoso", emoji: "🟡", color: "#f59e0b" },
+    HIGH: { label: "Poco fiable", emoji: "🟠", color: "#c2410c" },
+    CRITICAL: { label: "Malicioso", emoji: "🔴", color: "#ef4444" }
   };
   return map[t] || { label: String(tier || ""), emoji: "", color: "#888888" };
 }
@@ -428,8 +582,6 @@ function buildTrafficItemFromSheetRow_(label, count, tier, pctCell) {
     p = typeof pctCell === "number" ? pctCell : Number(String(pctCell).replace(",", "."));
   }
   if (isNaN(p)) p = 0;
-  const spark = [];
-  for (let i = 0; i < 7; i++) spark.push(p);
   return {
     label: label || meta.label,
     tier: tier || "LOW",
@@ -438,8 +590,7 @@ function buildTrafficItemFromSheetRow_(label, count, tier, pctCell) {
     pct: Math.round(p * 10) / 10,
     count: c,
     cnt: Number(c).toLocaleString("es-ES"),
-    yoy: null,
-    spark: spark
+    yoy: null
   };
 }
 
@@ -460,7 +611,7 @@ function buildDashboardPayloadFromResult_(result) {
   const spark = (p) => {
     const v = pct(p);
     const out = [];
-    for (let i = 0; i < 7; i++) out.push(v);
+    for (let i = 0; i < 30; i++) out.push(v);
     return out;
   };
 
@@ -475,10 +626,10 @@ function buildDashboardPayloadFromResult_(result) {
     medium_count: medium,
     low_count: low,
     traffic: [
-      { label: "Legítimo", tier: "LOW", emoji: "🟢", color: "#1D9E75", pct: pct(low), count: low, cnt: fmtCnt(low), yoy: null, spark: spark(low) },
-      { label: "Dudoso", tier: "MEDIUM", emoji: "🟡", color: "#EF9F27", pct: pct(medium), count: medium, cnt: fmtCnt(medium), yoy: null, spark: spark(medium) },
-      { label: "Poco fiable", tier: "HIGH", emoji: "🟠", color: "#D85A30", pct: pct(high), count: high, cnt: fmtCnt(high), yoy: null, spark: spark(high) },
-      { label: "Malicioso", tier: "CRITICAL", emoji: "🔴", color: "#E24B4A", pct: pct(critical), count: critical, cnt: fmtCnt(critical), yoy: null, spark: spark(critical) }
+      { label: "Legítimo", tier: "LOW", emoji: "🟢", color: "#22c55e", pct: pct(low), count: low, cnt: fmtCnt(low), yoy: null, spark: spark(low) },
+      { label: "Dudoso", tier: "MEDIUM", emoji: "🟡", color: "#f59e0b", pct: pct(medium), count: medium, cnt: fmtCnt(medium), yoy: null, spark: spark(medium) },
+      { label: "Poco fiable", tier: "HIGH", emoji: "🟠", color: "#c2410c", pct: pct(high), count: high, cnt: fmtCnt(high), yoy: null, spark: spark(high) },
+      { label: "Malicioso", tier: "CRITICAL", emoji: "🔴", color: "#ef4444", pct: pct(critical), count: critical, cnt: fmtCnt(critical), yoy: null, spark: spark(critical) }
     ]
   };
 }
@@ -2104,9 +2255,16 @@ function handleError_(error, runTsIso, execTimeMs) {
 function mostrarDashboard() {
   try {
     escribirAnaliticaEnHoja();
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const analyticsName = CFG.ANALYTICS_SHEET || "Analítica riesgo";
+    const analyticsSheet = ss && ss.getSheetByName(analyticsName);
+    if (analyticsSheet) {
+      appendHistoricoTrafficSnapshotFromSheet_(ss, analyticsSheet, analyticsName);
+    }
   } catch (e) {
     SpreadsheetApp.getUi().alert(
-      "No se pudo escribir la analítica en la hoja (el monitor se abrirá igual).\n\n" + (e.message || String(e))
+      "No se pudo escribir la analítica o el histórico de tráfico (el monitor se abrirá igual).\n\n" +
+        (e.message || String(e))
     );
   }
   var html = HtmlService.createHtmlOutputFromFile('dashboard')

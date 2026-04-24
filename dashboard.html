@@ -1,101 +1,168 @@
 <h2 class="sr-only">Dashboard de calidad de tráfico con comparativas interanuales</h2>
-<div style="padding:0 0 2rem">
-  <div style="display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:1.5rem;padding-bottom:1rem;border-bottom:0.5px solid var(--color-border-tertiary)">
+<div style="padding:0 0 2rem;background:#0a0a0b;color:#fafafa">
+  <div style="display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:1.5rem;padding-bottom:1rem;border-bottom:1px solid #27272a">
     <div>
-      <p style="font-size:11px;color:var(--color-text-secondary);margin:0 0 6px;letter-spacing:.06em">Payment intelligence</p>
-      <h2 style="font-size:22px;font-weight:500;margin:0">Traffic &amp; authorization monitor</h2>
+      <p style="font-size:11px;color:#a1a1aa;margin:0 0 6px;letter-spacing:.06em">Payment intelligence</p>
+      <h2 style="font-size:22px;font-weight:500;margin:0;color:#fafafa">Traffic &amp; authorization monitor</h2>
     </div>
     <div style="display:flex;align-items:center;gap:12px">
-      <span style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:500;color:var(--color-text-success);background:var(--color-background-success);border:0.5px solid var(--color-border-success);border-radius:100px;padding:4px 14px">
+      <span style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:500;color:#4ade80;background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.35);border-radius:100px;padding:4px 14px">
         <span id="pdot" style="width:6px;height:6px;border-radius:50%;background:currentColor;display:inline-block"></span>Live
       </span>
-      <code id="ts" style="font-size:11px;color:var(--color-text-secondary)"></code>
+      <code id="ts" style="font-size:11px;color:#a1a1aa;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace"></code>
     </div>
   </div>
 
-  <p style="font-size:11px;font-weight:500;color:var(--color-text-secondary);margin:0 0 10px;letter-spacing:.04em">Clasificación de tráfico</p>
-  <div style="background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);padding:1.25rem 1.5rem;margin-bottom:1.75rem">
-    <div id="spec" style="height:5px;border-radius:100px;display:flex;gap:3px;overflow:hidden;margin-bottom:1.25rem"></div>
-    <div id="tgrid" style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px"></div>
+  <p style="font-size:11px;font-weight:500;color:#a1a1aa;margin:0 0 10px;letter-spacing:.04em">Clasificación de tráfico</p>
+  <div style="background:#141416;border:1px solid #27272a;border-radius:12px;padding:1.25rem 1.5rem;margin-bottom:1.75rem">
+    <div id="spec" style="height:6px;border-radius:100px;display:flex;gap:2px;overflow:hidden;margin-bottom:1.25rem"></div>
+    <div id="tgrid" style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px"></div>
   </div>
 </div>
 
 <script>
-const yoyBadge=(d,label)=>{
-  if(d===null||d===undefined)return'';
-  const u=d>=0;
-  return `<span style="font-size:10px;font-weight:500;padding:2px 7px;border-radius:4px;background:${u?'var(--color-background-success)':'var(--color-background-danger)'};color:${u?'var(--color-text-success)':'var(--color-text-danger)'}">${u?'+':''}${d.toFixed(1)}pp YoY</span>`;
-};
-const spPts=(data,W,H)=>{
-  const mn=Math.min(...data),mx=Math.max(...data),rg=mx-mn||1;
-  return data.map((v,i)=>`${(i*W/(data.length-1)).toFixed(1)},${(H-((v-mn)/rg)*H*.85).toFixed(1)}`).join(' ');
-};
-const lastY=(data,H)=>{
-  const mn=Math.min(...data),mx=Math.max(...data),rg=mx-mn||1;
-  return(H-((data[data.length-1]-mn)/rg)*H*.85).toFixed(1);
+const yoyBadge = (d) => {
+  if (d === null || d === undefined) return "";
+  const u = d >= 0;
+  const bg = u ? "rgba(34,197,94,.2)" : "rgba(127,29,29,.55)";
+  const fg = u ? "#86efac" : "#fecaca";
+  const br = u ? "1px solid rgba(34,197,94,.4)" : "1px solid rgba(248,113,113,.25)";
+  return `<span style="font-size:10px;font-weight:600;padding:3px 8px;border-radius:4px;background:${bg};color:${fg};border:${br}">${u ? "+" : ""}${d.toFixed(1)}pp YoY</span>`;
 };
 
-const ts=document.getElementById('ts');
-const upTS=()=>ts.textContent=new Date().toLocaleString('es-ES',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'});
-upTS();setInterval(upTS,1000);
-let pOp=1;
-setInterval(()=>{pOp=pOp===1?.3:1;document.getElementById('pdot').style.opacity=pOp;},900);
+/**
+ * Sparkline en %: eje Y con rango [lo,hi] derivado del historial + margen,
+ * acotado a [0,100] para que la polyline siga los cambios reales sin aplastar ruido extremo.
+ */
+const sparkLayout = (data, W, H) => {
+  const n = data.length;
+  if (!n) return { pts: `0,${H / 2} ${W},${H / 2}`, lx: W, ly: H / 2 };
+  const nums = data.map((v) => {
+    const x = Number(v);
+    return isNaN(x) ? 0 : x;
+  });
+  let mn = Math.min(...nums);
+  let mx = Math.max(...nums);
+  if (!isFinite(mn) || !isFinite(mx)) {
+    mn = 0;
+    mx = 1;
+  }
+  const span = mx - mn;
+  const pad = span < 0.05 ? 1.2 : Math.max(span * 0.14, 0.6);
+  let lo = Math.max(0, mn - pad);
+  let hi = Math.min(100, mx + pad);
+  if (hi - lo < 0.15) {
+    lo = Math.max(0, mn - 1);
+    hi = Math.min(100, mx + 1);
+  }
+  if (hi <= lo) hi = lo + 0.5;
+  const padY = H * 0.1;
+  const plotH = H - 2 * padY;
+  const xAt = (i) => (n === 1 ? W / 2 : (i * W) / (n - 1));
+  const yAt = (v) => padY + plotH * (1 - (v - lo) / (hi - lo));
+  const pts = nums.map((v, i) => `${xAt(i).toFixed(1)},${yAt(v).toFixed(1)}`).join(" ");
+  const ly = yAt(nums[n - 1]);
+  return { pts, lx: W, ly: ly.toFixed(1) };
+};
 
-function renderTrafficClass(TRAFFIC){
-  const spec=document.getElementById('spec');
-  const tgrid=document.getElementById('tgrid');
-  spec.innerHTML='';
-  tgrid.innerHTML='';
-  const minFlex=.5;
-  TRAFFIC.forEach(t=>{
-    const d=document.createElement('div');
-    const flexVal=Math.max(minFlex,t.pct||0);
-    d.style.cssText=`flex:${flexVal};background:${t.color};height:100%;border-radius:100px`;
+const ts = document.getElementById("ts");
+const upTS = () =>
+  (ts.textContent = new Date().toLocaleString("es-ES", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  }));
+upTS();
+setInterval(upTS, 1000);
+let pOp = 1;
+setInterval(() => {
+  pOp = pOp === 1 ? 0.35 : 1;
+  document.getElementById("pdot").style.opacity = pOp;
+}, 900);
+
+function renderTrafficClass(TRAFFIC) {
+  const spec = document.getElementById("spec");
+  const tgrid = document.getElementById("tgrid");
+  spec.innerHTML = "";
+  tgrid.innerHTML = "";
+  const minFlex = 0.35;
+  const SPARK_LEN = 30;
+  const VB_W = 140;
+  const VB_H = 32;
+  TRAFFIC.forEach((t) => {
+    const d = document.createElement("div");
+    const flexVal = Math.max(minFlex, t.pct || 0);
+    d.style.cssText = `flex:${flexVal};background:${t.color};height:100%;border-radius:100px`;
     spec.appendChild(d);
   });
-  TRAFFIC.forEach(t=>{
-    const W=100,H=24;
-    const spark=Array.isArray(t.spark)&&t.spark.length?t.spark:[t.pct,t.pct,t.pct,t.pct,t.pct,t.pct,t.pct];
-    const pts=spPts(spark,W,H);
-    const ly=lastY(spark,H);
-    const el=document.createElement('div');
-    el.style.cssText=`background:var(--color-background-secondary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-md);padding:12px 14px`;
-    el.innerHTML=`
-    <p style="font-size:10px;font-weight:500;color:${t.color};margin:0 0 4px">${t.label}</p>
-    <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:2px">
-      <span style="font-size:28px;font-weight:500;line-height:1;color:var(--color-text-primary)">${t.pct}%</span>
+  TRAFFIC.forEach((t) => {
+    const W = VB_W;
+    const H = VB_H;
+    const cur = Number(t.pct);
+    const curN = isNaN(cur) ? 0 : cur;
+    let spark = (Array.isArray(t.spark) ? t.spark : []).map((v) => {
+      const n = Number(v);
+      return isNaN(n) ? curN : n;
+    });
+    if (!spark.length) spark = [curN];
+    if (spark.length < SPARK_LEN) {
+      const pad = Array(SPARK_LEN - spark.length).fill(curN);
+      spark = pad.concat(spark);
+    } else if (spark.length > SPARK_LEN) {
+      spark = spark.slice(-SPARK_LEN);
+    }
+    const { pts, lx, ly } = sparkLayout(spark, W, H);
+    const el = document.createElement("div");
+    el.style.cssText =
+      "background:#1c1c1f;border:1px solid #2e2e32;border-radius:10px;padding:14px 16px;min-width:0";
+    el.innerHTML = `
+    <p style="font-size:11px;font-weight:600;color:${t.color};margin:0 0 6px">${t.label}</p>
+    <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:4px">
+      <span style="font-size:32px;font-weight:600;line-height:1;color:#fafafa">${t.pct}%</span>
       ${yoyBadge(t.yoy)}
     </div>
-    <p style="font-size:11px;color:var(--color-text-secondary);margin:0 0 10px;font-family:var(--font-mono)">${t.cnt} intentos</p>
-    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:${H}px;overflow:visible">
-      <polyline points="${pts}" fill="none" stroke="${t.color}" stroke-width="1.5" stroke-linejoin="round" opacity=".7"/>
-      <circle cx="${W}" cy="${ly}" r="2.5" fill="${t.color}"/>
+    <p style="font-size:11px;color:#d4d4d8;margin:0 0 12px">${t.cnt} intentos</p>
+    <svg viewBox="0 0 ${VB_W} ${VB_H}" preserveAspectRatio="none" style="width:100%;height:${VB_H}px;overflow:visible;display:block;margin-top:2px">
+      <polyline points="${pts}" fill="none" stroke="${t.color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" opacity=".95"/>
+      <circle cx="${lx}" cy="${ly}" r="3" fill="${t.color}"/>
     </svg>`;
     tgrid.appendChild(el);
   });
 }
 
-function loadTrafficFromServer(){
-  const tgrid=document.getElementById('tgrid');
-  const spec=document.getElementById('spec');
-  spec.innerHTML='';
-  tgrid.innerHTML='<p style="grid-column:1/-1;font-size:12px;color:var(--color-text-secondary);margin:0">Cargando datos de riesgo…</p>';
+function loadTrafficFromServer() {
+  const tgrid = document.getElementById("tgrid");
+  const spec = document.getElementById("spec");
+  spec.innerHTML = "";
+  tgrid.innerHTML =
+    '<p style="grid-column:1/-1;font-size:12px;color:#a1a1aa;margin:0">Cargando datos de riesgo…</p>';
   google.script.run
-    .withSuccessHandler(function(data){
-      if(!data||!Array.isArray(data.traffic)){tgrid.innerHTML='<p style="grid-column:1/-1;color:var(--color-text-danger);font-size:12px">Respuesta inválida del servidor.</p>';return;}
+    .withSuccessHandler(function (data) {
+      if (!data || !Array.isArray(data.traffic)) {
+        tgrid.innerHTML =
+          '<p style="grid-column:1/-1;color:#f87171;font-size:12px">Respuesta inválida del servidor.</p>';
+        return;
+      }
       renderTrafficClass(data.traffic);
     })
-    .withFailureHandler(function(err){
-      spec.innerHTML='';
-      tgrid.innerHTML='<p style="grid-column:1/-1;color:var(--color-text-danger);font-size:12px">No se pudieron cargar los datos: '+(err&&err.message?String(err.message):String(err))+'</p>';
+    .withFailureHandler(function (err) {
+      spec.innerHTML = "";
+      tgrid.innerHTML =
+        '<p style="grid-column:1/-1;color:#f87171;font-size:12px">No se pudieron cargar los datos: ' +
+        (err && err.message ? String(err.message) : String(err)) +
+        "</p>";
     })
     .getDashboardDataFromSheet();
 }
 
-if(typeof google!=='undefined'&&google.script&&google.script.run){
+if (typeof google !== "undefined" && google.script && google.script.run) {
   loadTrafficFromServer();
-}else{
-  document.getElementById('spec').innerHTML='';
-  document.getElementById('tgrid').innerHTML='<p style="grid-column:1/-1;font-size:12px;color:var(--color-text-secondary)">Abre esta vista como aplicación web (Implementar) para ver datos en vivo.</p>';
+} else {
+  document.getElementById("spec").innerHTML = "";
+  document.getElementById("tgrid").innerHTML =
+    '<p style="grid-column:1/-1;font-size:12px;color:#a1a1aa">Abre esta vista como aplicación web (Implementar) para ver datos en vivo.</p>';
 }
 </script>
