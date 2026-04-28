@@ -345,7 +345,7 @@ function getDashboardDataFromSheet() {
 
   const summaryStart = findAnalyticsSummaryStartRow_(sheet);
   /** Debe coincidir con el número de filas del array `summary` en writeAnalyticsToSheet_. */
-  const SUMMARY_ROW_COUNT = 14;
+  const SUMMARY_ROW_COUNT = 15;
   const summaryVals = summaryStart
     ? sheet.getRange(summaryStart, 2, SUMMARY_ROW_COUNT, 1).getValues()
     : [];
@@ -376,6 +376,23 @@ function getDashboardDataFromSheet() {
     traffic[ti].spark = getSparkSeries30DaysFromHistorico_(ss, traffic[ti].label, traffic[ti].pct);
   }
 
+  const cartBlock = findAnalyticsTierCartTable_(sheet);
+  const traffic_cart = [];
+  if (cartBlock) {
+    const cartRows = readAnalyticsTierTableRows_(sheet, cartBlock);
+    for (let i = 0; i < cartRows.length; i++) {
+      const label = cartRows[i][0];
+      if (label === "" || label === null) break;
+      const count = cartRows[i][1];
+      const tier = cartRows[i][2];
+      const pct = cartRows[i][3];
+      traffic_cart.push(buildTrafficItemFromSheetRow_(String(label), count, String(tier || ""), pct));
+    }
+    for (let ti = 0; ti < traffic_cart.length; ti++) {
+      traffic_cart[ti].spark = getSparkSeries30DaysFromHistorico_(ss, traffic_cart[ti].label, traffic_cart[ti].pct);
+    }
+  }
+
   const g = (idx) => (summaryVals[idx] && summaryVals[idx][0] !== "" ? summaryVals[idx][0] : "");
   const num = (idx) => {
     const v = summaryVals[idx] ? summaryVals[idx][0] : "";
@@ -393,7 +410,11 @@ function getDashboardDataFromSheet() {
     high_count: traffic.filter((t) => t.tier === "HIGH").reduce((s, t) => s + t.count, 0),
     medium_count: traffic.filter((t) => t.tier === "MEDIUM").reduce((s, t) => s + t.count, 0),
     low_count: traffic.filter((t) => t.tier === "LOW").reduce((s, t) => s + t.count, 0),
-    traffic: traffic
+    traffic: traffic,
+    traffic_cart: traffic_cart,
+    total_carts_classified: traffic_cart.length
+      ? traffic_cart.reduce((s, t) => s + t.count, 0)
+      : 0
   };
 }
 
@@ -414,6 +435,20 @@ function findAnalyticsTierTable_(sheet) {
     const c0 = String(block[r][0] || "").trim();
     const c1 = String(block[r][1] || "").trim();
     if (c0 === "Categoría" && c1 === "Intentos") {
+      return { headerRow: r + 1, dataStartRow: r + 2 };
+    }
+  }
+  return null;
+}
+
+/** Tabla paralela a tiers pero con columna «Carritos» (pnr / cart_id). */
+function findAnalyticsTierCartTable_(sheet) {
+  const last = Math.min(Math.max(sheet.getLastRow(), 1), 220);
+  const block = sheet.getRange(1, 1, last, 4).getValues();
+  for (let r = 0; r < block.length; r++) {
+    const c0 = String(block[r][0] || "").trim();
+    const c1 = String(block[r][1] || "").trim();
+    if (c0 === "Categoría" && c1 === "Carritos") {
       return { headerRow: r + 1, dataStartRow: r + 2 };
     }
   }
@@ -574,6 +609,23 @@ function tierUiMeta_(tier) {
   return map[t] || { label: String(tier || ""), emoji: "", color: "#888888" };
 }
 
+/** Orden para tomar el peor tier entre intentos del mismo carrito (pnr). */
+function riskTierRank_(tier) {
+  const t = String(tier || "").toUpperCase();
+  if (t === "CRITICAL") return 4;
+  if (t === "HIGH") return 3;
+  if (t === "MEDIUM") return 2;
+  return 1;
+}
+
+function riskTierFromRank_(rank) {
+  const r = Number(rank);
+  if (r >= 4) return "CRITICAL";
+  if (r === 3) return "HIGH";
+  if (r === 2) return "MEDIUM";
+  return "LOW";
+}
+
 function buildTrafficItemFromSheetRow_(label, count, tier, pctCell) {
   const meta = tierUiMeta_(tier);
   const c = count === "" || count === null || count === undefined ? 0 : Number(count);
@@ -606,10 +658,23 @@ function buildDashboardPayloadFromResult_(result) {
   const critical = n(result.critical_count);
   const totalTier = low + medium + high + critical;
 
+  const lc = n(result.low_cart_count);
+  const mc = n(result.medium_cart_count);
+  const hc = n(result.high_cart_count);
+  const cc = n(result.critical_cart_count);
+  const totalTierCart = lc + mc + hc + cc;
+
   const pct = (c) => (totalTier > 0 ? Math.round((1000 * c) / totalTier) / 10 : 0);
+  const pctCart = (c) => (totalTierCart > 0 ? Math.round((1000 * c) / totalTierCart) / 10 : 0);
   const fmtCnt = (c) => Number(c).toLocaleString("es-ES");
   const spark = (p) => {
     const v = pct(p);
+    const out = [];
+    for (let i = 0; i < 30; i++) out.push(v);
+    return out;
+  };
+  const sparkCart = (p) => {
+    const v = pctCart(p);
     const out = [];
     for (let i = 0; i < 30; i++) out.push(v);
     return out;
@@ -621,6 +686,7 @@ function buildDashboardPayloadFromResult_(result) {
     window_end_dt: String(result.window_end_dt || ""),
     window_minutes: n(result.window_minutes),
     total_attempts: n(result.total_attempts),
+    total_carts_classified: n(result.total_carts_classified),
     critical_count: critical,
     high_count: high,
     medium_count: medium,
@@ -630,6 +696,12 @@ function buildDashboardPayloadFromResult_(result) {
       { label: "Dudoso", tier: "MEDIUM", emoji: "🟡", color: "#f59e0b", pct: pct(medium), count: medium, cnt: fmtCnt(medium), yoy: null, spark: spark(medium) },
       { label: "Poco fiable", tier: "HIGH", emoji: "🟠", color: "#c2410c", pct: pct(high), count: high, cnt: fmtCnt(high), yoy: null, spark: spark(high) },
       { label: "Malicioso", tier: "CRITICAL", emoji: "🔴", color: "#ef4444", pct: pct(critical), count: critical, cnt: fmtCnt(critical), yoy: null, spark: spark(critical) }
+    ],
+    traffic_cart: [
+      { label: "Legítimo (carrito)", tier: "LOW", emoji: "🟢", color: "#22c55e", pct: pctCart(lc), count: lc, cnt: fmtCnt(lc), yoy: null, spark: sparkCart(lc) },
+      { label: "Dudoso (carrito)", tier: "MEDIUM", emoji: "🟡", color: "#f59e0b", pct: pctCart(mc), count: mc, cnt: fmtCnt(mc), yoy: null, spark: sparkCart(mc) },
+      { label: "Poco fiable (carrito)", tier: "HIGH", emoji: "🟠", color: "#c2410c", pct: pctCart(hc), count: hc, cnt: fmtCnt(hc), yoy: null, spark: sparkCart(hc) },
+      { label: "Malicioso (carrito)", tier: "CRITICAL", emoji: "🔴", color: "#ef4444", pct: pctCart(cc), count: cc, cnt: fmtCnt(cc), yoy: null, spark: sparkCart(cc) }
     ]
   };
 }
@@ -697,6 +769,7 @@ function writeAnalyticsToSheet_(ss, result) {
     ["Resultado KO", n(result.ko_attempts)],
     ["Otros resultados", n(result.other_attempts)],
     ["PNRs únicos", n(result.unique_pnrs)],
+    ["Carritos clasificados (peor tier / pnr)", n(result.total_carts_classified)],
     ["Riesgo medio", n(result.avg_risk_score)],
     ["Desv. típica riesgo", n(result.stddev_risk_score)],
     ["Riesgo mín / máx", n(result.min_risk_score) + " / " + n(result.max_risk_score)],
@@ -736,7 +809,34 @@ function writeAnalyticsToSheet_(ss, result) {
     .build();
   sheet.insertChart(chart);
 
-  row += tierBody.length + 14;
+  row += tierBody.length + 2;
+  sheet.getRange(row, 1).setValue("Clasificación por carrito (pt.pnr → peor tier entre intentos del carrito)");
+  sheet.getRange(row, 1).setFontWeight("bold");
+  row += 2;
+
+  const cartTierHeader = [["Categoría", "Carritos", "Tier", "% sobre carritos"]];
+  const cartTierBody = payload.traffic_cart.map((t) => [t.label, t.count, t.tier, t.pct]);
+  sheet.getRange(row, 1).offset(0, 0, 1, 4).setValues(cartTierHeader);
+  sheet.getRange(row, 1).offset(0, 0, 1, 4).setFontWeight("bold").setBackground("#f3f3f3");
+  row += 1;
+  sheet.getRange(row, 1).offset(0, 0, cartTierBody.length, 4).setValues(cartTierBody);
+  sheet.getRange(row, 2).offset(0, 0, cartTierBody.length, 1).setNumberFormat("#,##0");
+  sheet.getRange(row, 4).offset(0, 0, cartTierBody.length, 1).setNumberFormat("0.0");
+
+  const chartCartRange = sheet.getRange(row - 1, 1).offset(0, 0, 1 + cartTierBody.length, 2);
+  const chartCart = sheet
+    .newChart()
+    .setChartType(Charts.ChartType.COLUMN)
+    .addRange(chartCartRange)
+    .setNumHeaders(1)
+    .setOption("title", "Carritos por categoría de riesgo (peor tier por pnr)")
+    .setOption("legend", { position: "none" })
+    .setOption("colors", payload.traffic_cart.map((t) => t.color))
+    .setPosition(row + cartTierBody.length + 1, 1, 0, 0)
+    .build();
+  sheet.insertChart(chartCart);
+
+  row += cartTierBody.length + 14;
   const gateways = parseJsonArraySafe_(result.gateway_json);
   if (gateways.length) {
     sheet.getRange(row, 1).setValue("Pasarela — intentos y tasa OK");
@@ -1211,6 +1311,31 @@ function recomputeRiskMetricsInResult_(result) {
   result.high_count = labeled.filter((r) => r.risk_tier === "HIGH").length;
   result.medium_count = labeled.filter((r) => r.risk_tier === "MEDIUM").length;
   result.low_count = labeled.filter((r) => r.risk_tier === "LOW").length;
+
+  const worstTierByPnr = {};
+  for (let i = 0; i < labeled.length; i++) {
+    const k = String(labeled[i].pnr || "").trim();
+    if (!k) continue;
+    const rk = riskTierRank_(labeled[i].risk_tier);
+    if (worstTierByPnr[k] === undefined || rk > worstTierByPnr[k]) worstTierByPnr[k] = rk;
+  }
+  let cc = 0;
+  let hc = 0;
+  let mc = 0;
+  let lc = 0;
+  const pnrKeys = Object.keys(worstTierByPnr);
+  for (let i = 0; i < pnrKeys.length; i++) {
+    const t = riskTierFromRank_(worstTierByPnr[pnrKeys[i]]);
+    if (t === "CRITICAL") cc++;
+    else if (t === "HIGH") hc++;
+    else if (t === "MEDIUM") mc++;
+    else lc++;
+  }
+  result.critical_cart_count = cc;
+  result.high_cart_count = hc;
+  result.medium_cart_count = mc;
+  result.low_cart_count = lc;
+  result.total_carts_classified = cc + hc + mc + lc;
 
   result.avg_risk_score = scores.length ? Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 10) / 10 : 0;
   result.stddev_risk_score = stddevSampleOneDecimal_(scores);

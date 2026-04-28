@@ -13,10 +13,16 @@
     </div>
   </div>
 
-  <p style="font-size:11px;font-weight:500;color:#a1a1aa;margin:0 0 10px;letter-spacing:.04em">Clasificación de tráfico</p>
-  <div style="background:#141416;border:1px solid #27272a;border-radius:12px;padding:1.25rem 1.5rem;margin-bottom:1.75rem">
-    <div id="spec" style="height:6px;border-radius:100px;display:flex;gap:2px;overflow:hidden;margin-bottom:1.25rem"></div>
+  <p style="font-size:11px;font-weight:500;color:#a1a1aa;margin:0 0 10px;letter-spacing:.04em">Clasificación de tráfico — intentos</p>
+  <div style="background:#141416;border:1px solid #27272a;border-radius:16px;padding:1.25rem 1.5rem;margin-bottom:1.25rem">
+    <div id="spec" style="height:8px;border-radius:9999px;display:flex;gap:0;overflow:hidden;margin-bottom:1.25rem;box-shadow:inset 0 0 0 1px rgba(255,255,255,.04)"></div>
     <div id="tgrid" style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px"></div>
+  </div>
+
+  <p style="font-size:11px;font-weight:500;color:#a1a1aa;margin:0 0 10px;letter-spacing:.04em">Por carrito (mismo riesgo por pnr, peor intento manda)</p>
+  <div style="background:#141416;border:1px solid #27272a;border-radius:16px;padding:1.25rem 1.5rem;margin-bottom:0">
+    <div id="specCart" style="height:8px;border-radius:9999px;display:flex;gap:0;overflow:hidden;margin-bottom:1.25rem;box-shadow:inset 0 0 0 1px rgba(255,255,255,.04)"></div>
+    <div id="tgridCart" style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px"></div>
   </div>
 </div>
 
@@ -27,7 +33,7 @@ const yoyBadge = (d) => {
   const bg = u ? "rgba(34,197,94,.2)" : "rgba(127,29,29,.55)";
   const fg = u ? "#86efac" : "#fecaca";
   const br = u ? "1px solid rgba(34,197,94,.4)" : "1px solid rgba(248,113,113,.25)";
-  return `<span style="font-size:10px;font-weight:600;padding:3px 8px;border-radius:4px;background:${bg};color:${fg};border:${br}">${u ? "+" : ""}${d.toFixed(1)}pp YoY</span>`;
+  return `<span style="font-size:10px;font-weight:600;padding:3px 8px;border-radius:8px;background:${bg};color:${fg};border:${br}">${u ? "+" : ""}${d.toFixed(1)}pp YoY</span>`;
 };
 
 /**
@@ -83,9 +89,11 @@ setInterval(() => {
   document.getElementById("pdot").style.opacity = pOp;
 }, 900);
 
-function renderTrafficClass(TRAFFIC) {
-  const spec = document.getElementById("spec");
-  const tgrid = document.getElementById("tgrid");
+function renderTrafficClass(TRAFFIC, specId, tgridId, countNoun) {
+  const spec = document.getElementById(specId || "spec");
+  const tgrid = document.getElementById(tgridId || "tgrid");
+  const noun = countNoun || "intentos";
+  if (!spec || !tgrid) return;
   spec.innerHTML = "";
   tgrid.innerHTML = "";
   const minFlex = 0.35;
@@ -95,7 +103,7 @@ function renderTrafficClass(TRAFFIC) {
   TRAFFIC.forEach((t) => {
     const d = document.createElement("div");
     const flexVal = Math.max(minFlex, t.pct || 0);
-    d.style.cssText = `flex:${flexVal};background:${t.color};height:100%;border-radius:100px`;
+    d.style.cssText = `flex:${flexVal};background:${t.color};height:100%;min-width:0`;
     spec.appendChild(d);
   });
   TRAFFIC.forEach((t) => {
@@ -117,18 +125,20 @@ function renderTrafficClass(TRAFFIC) {
     const { pts, lx, ly } = sparkLayout(spark, W, H);
     const el = document.createElement("div");
     el.style.cssText =
-      "background:#1c1c1f;border:1px solid #2e2e32;border-radius:10px;padding:14px 16px;min-width:0";
+      "background:#1c1c1f;border:1px solid #2e2e32;border-radius:14px;padding:14px 16px;min-width:0";
     el.innerHTML = `
     <p style="font-size:11px;font-weight:600;color:${t.color};margin:0 0 6px">${t.label}</p>
     <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:4px">
       <span style="font-size:32px;font-weight:600;line-height:1;color:#fafafa">${t.pct}%</span>
       ${yoyBadge(t.yoy)}
     </div>
-    <p style="font-size:11px;color:#d4d4d8;margin:0 0 12px">${t.cnt} intentos</p>
-    <svg viewBox="0 0 ${VB_W} ${VB_H}" preserveAspectRatio="none" style="width:100%;height:${VB_H}px;overflow:visible;display:block;margin-top:2px">
+    <p style="font-size:11px;color:#d4d4d8;margin:0 0 10px">${t.cnt} ${noun}</p>
+    <div style="border-radius:10px;overflow:hidden;background:rgba(0,0,0,.2);padding:0 2px">
+    <svg viewBox="0 0 ${VB_W} ${VB_H}" preserveAspectRatio="none" style="width:100%;height:${VB_H}px;overflow:visible;display:block;vertical-align:middle">
       <polyline points="${pts}" fill="none" stroke="${t.color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" opacity=".95"/>
       <circle cx="${lx}" cy="${ly}" r="3" fill="${t.color}"/>
-    </svg>`;
+    </svg>
+    </div>`;
     tgrid.appendChild(el);
   });
 }
@@ -146,7 +156,19 @@ function loadTrafficFromServer() {
           '<p style="grid-column:1/-1;color:#f87171;font-size:12px">Respuesta inválida del servidor.</p>';
         return;
       }
-      renderTrafficClass(data.traffic);
+      renderTrafficClass(data.traffic, "spec", "tgrid", "intentos");
+      const tc = data.traffic_cart;
+      if (Array.isArray(tc) && tc.length) {
+        renderTrafficClass(tc, "specCart", "tgridCart", "carritos (pnr)");
+      } else {
+        const s = document.getElementById("specCart");
+        const g = document.getElementById("tgridCart");
+        if (s) s.innerHTML = "";
+        if (g) {
+          g.innerHTML =
+            '<p style="grid-column:1/-1;font-size:11px;color:#a1a1aa;margin:0">Actualiza la hoja analítica para ver carritos por riesgo.</p>';
+        }
+      }
     })
     .withFailureHandler(function (err) {
       spec.innerHTML = "";
